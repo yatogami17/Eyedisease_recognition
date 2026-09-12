@@ -1,8 +1,10 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { spawn } from "child_process";
 import dotenv from "dotenv";
+import { GoogleGenAI } from "@google/genai";
+import { predictEyeDisease, augmentReportClinicalDetails } from "./server/predictor";
+import { analyzePlagiarism } from "./server/plagiarism";
 
 dotenv.config();
 
@@ -197,54 +199,81 @@ function getSimulatedAnalysis(conditionName: string = "") {
   }
 }
 
-// Helper to run diagnostic analysis inside our secure Python 3 subsystem
-function runPythonPredictor(image: string, conditionName: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    console.log("[Backend python spawner] Launching secure python3 predictor.py subsystem...");
-    const pyProcess = spawn("python3", [path.join(process.cwd(), "predictor.py")]);
-    
-    let stdoutData = "";
-    let stderrData = "";
-    
-    pyProcess.stdout.on("data", (data) => {
-      stdoutData += data.toString();
-    });
-    
-    pyProcess.stderr.on("data", (data) => {
-      stderrData += data.toString();
-    });
-    
-    pyProcess.on("close", (code) => {
-      if (code !== 0) {
-        console.error(`[Python Engine Error] Exit code ${code}: ${stderrData}`);
-        return reject(new Error(`Python process exited with code ${code}. Error: ${stderrData}`));
-      }
-      
-      try {
-        const parsed = JSON.parse(stdoutData.trim());
-        if (parsed.error) {
-          return reject(new Error(parsed.message || parsed.error));
-        }
-        resolve(parsed);
-      } catch (parseErr) {
-        console.error("[Python Engine Parse Error] Failed to parse stdout:", stdoutData);
-        reject(new Error("Failed to parse prediction result from Python engine."));
-      }
-    });
-    
-    pyProcess.on("error", (err) => {
-      console.error("[Python Process Spawn Error]:", err);
-      reject(err);
-    });
-    
-    // Write JSON payload to Python's stdin and end the stream
-    const payload = JSON.stringify({ image, conditionName });
-    pyProcess.stdin.write(payload);
-    pyProcess.stdin.end();
-  });
+// Lazy-loaded Gemini AI client
+let genaiClient: GoogleGenAI | null = null;
+function getGenAI(): GoogleGenAI | null {
+  if (!process.env.GEMINI_API_KEY) {
+    return null;
+  }
+  if (!genaiClient) {
+    genaiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return genaiClient;
 }
 
-// Endpoint for retinal image disease prediction, delegating core logic to Python
+// Optional Gemini multimodal analysis for uploaded fundus scans
+async function analyzeWithGemini(imageBase64: string, conditionName: string): Promise<any> {
+  const ai = getGenAI();
+  if (!ai) return null;
+
+  let mimeType = "image/jpeg";
+  let cleanBase64 = imageBase64;
+  const match = imageBase64.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+  if (match) {
+    mimeType = match[1];
+    cleanBase64 = imageBase64.slice(match[0].length);
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              data: cleanBase64,
+              mimeType
+            }
+          },
+          {
+            text: `${SYSTEM_PROMPT}\n\nCondition hint: "${conditionName || ""}". Analyze this fundus image and return the clinical screening report as valid JSON adhering to this schema:
+{
+  "primaryDiagnosis": string,
+  "confidence": number,
+  "status": "Normal" | "Warning" | "Urgent",
+  "riskScore": number,
+  "conditions": [{"name": string, "probability": number, "description": string}],
+  "anatomicalFindings": {
+    "opticDisc": string,
+    "macula": string,
+    "vasculature": string,
+    "retinalBackground": string
+  },
+  "detailedAnalysis": string,
+  "recommendations": string[]
+}`
+          }
+        ]
+      }
+    ],
+    config: {
+      responseMimeType: "application/json"
+    }
+  });
+
+  const text = response.text;
+  if (!text) return null;
+  const parsed = JSON.parse(text);
+  const completeReport = augmentReportClinicalDetails(parsed, parsed.primaryDiagnosis || conditionName);
+  completeReport.computedTelemetry = {
+    engineLanguage: "Gemini 2.5 Flash Vision (Google GenAI)",
+    conditionHint: conditionName || "auto"
+  };
+  return completeReport;
+}
+
+// Endpoint for retinal image disease prediction
 app.post("/api/predict", async (req, res) => {
   const { image, conditionName } = req.body;
 
@@ -253,68 +282,36 @@ app.post("/api/predict", async (req, res) => {
   }
 
   try {
-    console.log("[Clinical Neural Simulator] Delegating fundus feature extraction and classification to Python subsystem...");
-    const reportData = await runPythonPredictor(image, conditionName || "");
-    console.log(`[Clinical Neural Simulator] Received Python analysis. Primary Diagnosis: '${reportData.primaryDiagnosis}'`);
+    // If Gemini API Key is configured, attempt multimodal analysis
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        console.log("[Clinical Neural Simulator] Querying Gemini 2.5 Flash for vision diagnostics...");
+        const geminiResult = await analyzeWithGemini(image, conditionName || "");
+        if (geminiResult) {
+          console.log(`[Clinical Neural Simulator] Gemini analysis complete. Primary Diagnosis: '${geminiResult.primaryDiagnosis}'`);
+          return res.json(geminiResult);
+        }
+      } catch (geminiErr) {
+        console.warn("[Clinical Neural Simulator] Gemini vision inference failed or unavailable, falling back to deterministic clinical engine:", geminiErr);
+      }
+    }
+
+    // High-fidelity clinical predictor simulation engine
+    console.log("[Clinical Neural Simulator] Executing deterministic clinical feature extraction...");
+    const reportData = predictEyeDisease(image, conditionName || "");
+    console.log(`[Clinical Neural Simulator] Prediction complete. Primary Diagnosis: '${reportData.primaryDiagnosis}'`);
     return res.json(reportData);
   } catch (error: any) {
-    console.error("[Clinical Neural Simulator] Error in Python diagnostic loop:", error);
+    console.error("[Clinical Neural Simulator] Error in diagnostic loop:", error);
     return res.status(500).json({
-      error: "Error running clinical algorithm inside Python subprocess.",
+      error: "Error running clinical algorithm.",
       message: error?.message || "Internal algorithm runtime error."
     });
   }
 });
 
-// Helper to run code plagiarism analyzer inside our secure Python 3 subsystem
-function runPythonPlagiarism(codeA: string, codeB: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    console.log("[Backend Plagiarism spawner] Launching secure python3 plagiarism_checker.py subsystem...");
-    const pyProcess = spawn("python3", [path.join(process.cwd(), "plagiarism_checker.py")]);
-    
-    let stdoutData = "";
-    let stderrData = "";
-    
-    pyProcess.stdout.on("data", (data) => {
-      stdoutData += data.toString();
-    });
-    
-    pyProcess.stderr.on("data", (data) => {
-      stderrData += data.toString();
-    });
-    
-    pyProcess.on("close", (code) => {
-      if (code !== 0) {
-        console.error(`[Plagiarism Engine Error] Exit code ${code}: ${stderrData}`);
-        return reject(new Error(`Python process exited with code ${code}. Error: ${stderrData}`));
-      }
-      
-      try {
-        const parsed = JSON.parse(stdoutData.trim());
-        if (parsed.error) {
-          return reject(new Error(parsed.message || parsed.error));
-        }
-        resolve(parsed);
-      } catch (parseErr) {
-        console.error("[Plagiarism Engine Parse Error] Failed to parse stdout:", stdoutData);
-        reject(new Error("Failed to parse plagiarism result from Python engine."));
-      }
-    });
-    
-    pyProcess.on("error", (err) => {
-      console.error("[Plagiarism Process Spawn Error]:", err);
-      reject(err);
-    });
-    
-    // Write JSON payload to Python's stdin and end the stream
-    const payload = JSON.stringify({ codeA, codeB });
-    pyProcess.stdin.write(payload);
-    pyProcess.stdin.end();
-  });
-}
-
 // Endpoint for code plagiarism analysis
-app.post("/api/plagiarism-test", async (req, res) => {
+app.post("/api/plagiarism-test", (req, res) => {
   const { codeA, codeB } = req.body;
 
   if (codeA === undefined || codeB === undefined) {
@@ -323,7 +320,7 @@ app.post("/api/plagiarism-test", async (req, res) => {
 
   try {
     console.log("[Plagiarism Subsystem] Analyzing code similarities...");
-    const results = await runPythonPlagiarism(codeA, codeB);
+    const results = analyzePlagiarism(codeA, codeB);
     return res.json(results);
   } catch (error: any) {
     console.error("[Plagiarism Subsystem] Error running analyzer:", error);

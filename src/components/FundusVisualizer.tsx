@@ -1,411 +1,516 @@
-import React from "react";
-import { SampleRetinalImage, FundusMarker } from "../types";
+import React, { useState } from "react";
+import { SampleRetinalImage, FundusMarker, LocalizedAbnormality, OpticDiscMetrics, VascularMetrics } from "../types";
+import { AlertCircle, CheckCircle2, Eye, Info, Layers, Scan } from "lucide-react";
 
-interface FundusVisualizerProps {
-  sample: SampleRetinalImage;
-  activeMarkerId: string | null;
-  onSelectMarker: (markerId: string | null) => void;
+export interface FundusVisualizerProps {
+  sample?: SampleRetinalImage;
+  conditionKey?: string;
+  activeMarkerId?: string | null;
+  onSelectMarker?: (markerId: string | null) => void;
+  onMarkerSelect?: (markerId: string | null) => void;
   uploadedImageSrc?: string | null;
   customMarkers?: FundusMarker[];
+  markers?: FundusMarker[];
+  abnormalities?: LocalizedAbnormality[];
+  activeOverlayMode?: "all" | "bounding_boxes" | "vessels" | "optic_cup" | "gradcam" | "raw";
+  showGrid?: boolean;
+  customOverlayClass?: string;
 }
 
 export const FundusVisualizer: React.FC<FundusVisualizerProps> = ({
   sample,
+  conditionKey: propConditionKey,
   activeMarkerId,
   onSelectMarker,
+  onMarkerSelect,
   uploadedImageSrc,
-  customMarkers
+  customMarkers,
+  markers: propMarkers,
+  abnormalities: propAbnormalities,
+  activeOverlayMode = "all",
+  showGrid = true,
+  customOverlayClass = ""
 }) => {
-  const { conditionKey, markers } = sample;
+  const [hoveredItem, setHoveredItem] = useState<{
+    id: string;
+    title: string;
+    description: string;
+    confidence?: number;
+    severity?: string;
+    clinicalSignificance?: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
-  // Render interactive SVG Fundus simulation
-  const renderFundusSVG = () => {
-    // Shared blood vessel paths radiating from the Optic Disc (cx=35%, cy=50%, i.e., x=140, y=200 inside 400x400)
-    // 400x400 viewBox
-    return (
-      <svg
-        id={`svg-fundus-${conditionKey}`}
-        viewBox="0 0 400 400"
-        className="w-full h-full rounded-full overflow-hidden shadow-2xl border-4 border-slate-800 bg-slate-950 transition-all duration-500"
-      >
-        <defs>
-          {/* Radial Gradient for healthy vs diseased retina backgrounds */}
-          <radialGradient id="normalGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ff7c4d" />
-            <stop offset="40%" stopColor="#e04a24" />
-            <stop offset="85%" stopColor="#9e2203" />
-            <stop offset="100%" stopColor="#4f0d00" />
-          </radialGradient>
+  const handleSelect = (id: string | null) => {
+    if (onSelectMarker) onSelectMarker(id);
+    if (onMarkerSelect) onMarkerSelect(id);
+  };
 
-          <radialGradient id="amdGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ff8a5c" />
-            <stop offset="45%" stopColor="#e35630" />
-            <stop offset="80%" stopColor="#a82103" />
-            <stop offset="100%" stopColor="#541002" />
-          </radialGradient>
+  const effectiveConditionKey = propConditionKey || sample?.conditionKey || "normal";
+  const effectiveMarkers: FundusMarker[] = customMarkers || propMarkers || sample?.markers || [];
+  const effectiveAbnormalities: LocalizedAbnormality[] = propAbnormalities || sample?.abnormalities || [];
+  const opticMetrics: OpticDiscMetrics | undefined = sample?.opticMetrics;
+  const vascularMetrics: VascularMetrics | undefined = sample?.vascularMetrics;
 
-          <radialGradient id="glauGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ff8f59" />
-            <stop offset="40%" stopColor="#db481f" />
-            <stop offset="85%" stopColor="#961f03" />
-            <stop offset="100%" stopColor="#4c0e00" />
-          </radialGradient>
+  const showBoxes = activeOverlayMode === "all" || activeOverlayMode === "bounding_boxes";
+  const showVessels = activeOverlayMode === "all" || activeOverlayMode === "vessels";
+  const showOpticCup = activeOverlayMode === "all" || activeOverlayMode === "optic_cup";
+  const showGradCam = activeOverlayMode === "all" || activeOverlayMode === "gradcam";
 
-          {/* Blur filters for diseased regions */}
-          <filter id="drusenBlur" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="3" />
-          </filter>
-          
-          <filter id="cataractHaze" x="0%" y="0%" width="100%" height="100%">
-            <feGaussianBlur stdDeviation="5" />
-          </filter>
-        </defs>
-
-        {/* Global Retinal Sphere Circle */}
-        <circle
-          cx="200"
-          cy="200"
-          r="190"
-          fill={
-            conditionKey === "amd"
-              ? "url(#amdGrad)"
-              : conditionKey === "glaucoma"
-              ? "url(#glauGrad)"
-              : "url(#normalGrad)"
-          }
-          className="transition-all duration-700"
-        />
-
-        {/* ================= OPTIC DISC & CUP ================= */}
-        <g id="optic-nerve-complex">
-          {/* Optic Disc outer boundary (cx=140, cy=200 for nasal offset, representing right eye layout) */}
-          <ellipse
-            cx="140"
-            cy="200"
-            rx={conditionKey === "glaucoma" ? "34" : "28"}
-            ry={conditionKey === "glaucoma" ? "38" : "32"}
-            fill="#ffd394"
-            opacity="0.9"
-            className="transition-all duration-500"
-          />
-
-          {/* Optic Cup (Excavation) inside the disc. Critically high vertical ratio in glaucoma */}
-          <ellipse
-            cx="144"
-            cy="200"
-            rx={conditionKey === "glaucoma" ? "27" : "10"}
-            ry={conditionKey === "glaucoma" ? "31" : "12"}
-            fill="#fffae6"
-            opacity="0.95"
-            className="transition-all duration-500"
-          />
-        </g>
-
-        {/* ================= MACULA COMPLEX (cx=260, cy=200) ================= */}
-        <g id="macular-segment">
-          {/* Muted dark shaded circle for healthy macula background */}
-          <circle
-            cx="260"
-            cy="200"
-            r="35"
-            fill="#6b1d03"
-            opacity="0.4"
-          />
-          {/* Foveal Center Reflex dot */}
-          <circle
-            cx="260"
-            cy="200"
-            r={conditionKey === "amd" ? "4" : "1.5"}
-            fill={conditionKey === "amd" ? "#d9b652" : "#ffeedd"}
-            opacity={conditionKey === "amd" ? "0.8" : "0.95"}
-          />
-        </g>
-
-        {/* ================= VASCULAR SYSTEM ================= */}
-        {/* Branching arterioles (red/orange) and venules (deep dark crimson) */}
-        <g id="retinal-vasculature" strokeLinecap="round">
-          {/* Superior Temporal Arcade Vessel */}
-          <path
-            d="M 148 180 Q 155 120 210 90 T 310 110"
-            stroke="#aa1100"
-            strokeWidth={conditionKey === "glaucoma" ? "1.8" : "2.5"}
-            fill="none"
-            opacity={conditionKey === "glaucoma" ? "0.6" : "0.95"}
-            className="transition-all duration-500"
-          />
-          <path
-            d="M 148 180 Q 155 120 210 90 T 310 110"
-            stroke="#e03716"
-            strokeWidth={conditionKey === "glaucoma" ? "1" : "1.5"}
-            fill="none"
-            opacity={conditionKey === "glaucoma" ? "0.5" : "0.95"}
-            className="transition-all duration-500"
-          />
-
-          {/* Inferior Temporal Arcade Vessel */}
-          <path
-            d="M 148 220 Q 160 275 220 305 T 315 285"
-            stroke="#b31500"
-            strokeWidth={conditionKey === "glaucoma" ? "2" : "2.8"}
-            fill="none"
-            opacity={conditionKey === "glaucoma" ? "0.6" : "0.95"}
-          />
-          <path
-            d="M 148 220 Q 160 275 220 305 T 315 285"
-            stroke="#f5401b"
-            strokeWidth={conditionKey === "glaucoma" ? "1.2" : "1.6"}
-            fill="none"
-            opacity={conditionKey === "glaucoma" ? "0.5" : "0.95"}
-          />
-
-          {/* Nasal Venules & Arterioles (Branching Left) */}
-          <path d="M 132 185 Q 100 150 60 140" stroke="#940f00" strokeWidth="2.2" fill="none" />
-          <path d="M 132 185 Q 100 150 60 140" stroke="#f03816" strokeWidth="1.2" fill="none" />
-          <path d="M 132 215 Q 98 250 55 265" stroke="#940f00" strokeWidth="2.4" fill="none" />
-          <path d="M 132 215 Q 98 250 55 265" stroke="#f03816" strokeWidth="1.3" fill="none" />
-
-          {/* Small macular twigs radiating towards macula (cx=260) */}
-          <path d="M 210 90 Q 235 125 242 160" stroke="#bf2304" strokeWidth="1.2" fill="none" opacity="0.8" />
-          <path d="M 220 305 Q 240 265 245 230" stroke="#bf2304" strokeWidth="1.1" fill="none" opacity="0.8" />
-        </g>
-
-        {/* ================= CONDITION-SPECIFIC OVERLAYS ================= */}
-
-        {/* 1. DIABETIC RETINOPATHY LESIONS */}
-        {conditionKey === "diabetic" && (
-          <g id="dr-pathology">
-            {/* scattered tiny microaneurysms (bright red dots) */}
-            <circle cx="210" cy="140" r="2.5" fill="#ff0000" />
-            <circle cx="230" cy="245" r="2" fill="#ff0055" />
-            <circle cx="170" cy="230" r="3" fill="#ee0000" />
-            <circle cx="158" cy="110" r="2" fill="#ff0000" />
-            <circle cx="185" cy="75" r="2.5" fill="#ee0000" />
-            <circle cx="280" cy="160" r="2.2" fill="#ff0000" />
-            <circle cx="295" cy="240" r="3" fill="#ff0033" />
-
-            {/* Cotton wool spots (soft white clouds) */}
-            <circle cx="285" cy="115" r="8" fill="#ffffff" opacity="0.72" filter="url(#drusenBlur)" />
-            <circle cx="180" cy="265" r="6" fill="#ffffff" opacity="0.65" filter="url(#drusenBlur)" />
-
-            {/* Hard exudate lipid clusters (yellow crisp specs) */}
-            <polygon points="208,230 212,228 214,233 210,234" fill="#ffee55" opacity="0.9" />
-            <polygon points="214,236 218,233 221,238 217,239" fill="#ffff33" opacity="0.9" />
-            <polygon points="205,241 210,239 211,244 207,245" fill="#ffee22" opacity="0.85" />
-            <circle cx="225" cy="235" r="2.2" fill="#ffee66" opacity="0.9" />
-            <circle cx="222" cy="241" r="1.8" fill="#ffff55" opacity="0.9" />
-            
-            {/* Exudates clustered around macular temporal boundaries */}
-            <circle cx="206" cy="165" r="1.5" fill="#ffff44" />
-            <circle cx="202" cy="172" r="2.2" fill="#ffff55" />
-            <circle cx="209" cy="174" r="1.8" fill="#ffee66" />
-            <circle cx="213" cy="169" r="2" fill="#ffee33" />
-            
-            {/* Blot Hemorrhages (larger irregular red patches) */}
-            <path d="M 270 260 Q 274 256 278 262 T 273 268 Z" fill="#aa0000" opacity="0.85" />
-            <path d="M 130 115 Q 134 112 138 116 T 132 121 Z" fill="#990000" opacity="0.85" />
-            <path d="M 290 85 Q 296 82 294 88 T 288 89 Z" fill="#aa0000" opacity="0.8" />
-          </g>
-        )}
-
-        {/* 2. MACULAR DEGENERATION (SOFT DRUSEN CLUSTERS) */}
-        {conditionKey === "amd" && (
-          <g id="amd-pathology">
-            {/* Massive accumulation of fuzzy soft drusen centered precisely on Macula (cx=260, cy=200) */}
-            <circle cx="260" cy="200" r="14" fill="#ffe066" opacity="0.6" filter="url(#drusenBlur)" />
-            <circle cx="272" cy="192" r="10" fill="#ffff80" opacity="0.5" filter="url(#drusenBlur)" />
-            <circle cx="248" cy="208" r="12" fill="#ffe680" opacity="0.55" filter="url(#drusenBlur)" />
-            <circle cx="254" cy="184" r="11" fill="#ffe066" opacity="0.6" filter="url(#drusenBlur)" />
-            <circle cx="270" cy="212" r="10" fill="#ffff99" opacity="0.45" filter="url(#drusenBlur)" />
-            
-            {/* Scattered medium discrete drusen */}
-            <circle cx="230" cy="170" r="4" fill="#ffea75" opacity="0.8" filter="url(#drusenBlur)" />
-            <circle cx="238" cy="225" r="4.5" fill="#fff294" opacity="0.8" filter="url(#drusenBlur)" />
-            <circle cx="285" cy="220" r="5" fill="#ffe04d" opacity="0.75" filter="url(#drusenBlur)" />
-            <circle cx="282" cy="175" r="4" fill="#ffff80" opacity="0.8" filter="url(#drusenBlur)" />
-            <circle cx="242" cy="195" r="3.5" fill="#ffdd44" opacity="0.85" filter="url(#drusenBlur)" />
-            <circle cx="266" cy="204" r="3" fill="#ffffff" opacity="0.9" />
-          </g>
-        )}
-
-        {/* 3. CATARACT CLOUDY LENS OVERLAY (Covers entire screen to simulate opacification) */}
-        {conditionKey === "cataract" && (
-          <g id="cataract-pathology">
-            {/* Concentric opacity circles representing varying lens nuclear cloudiness */}
-            <circle cx="200" cy="200" r="186" fill="#eef2f5" opacity="0.48" />
-            <circle cx="200" cy="200" r="140" fill="#fdfdfd" opacity="0.18" />
-            <circle cx="180" cy="180" r="100" fill="#e8eff5" opacity="0.15" />
-            {/* Dusty scatter flares */}
-            <path d="M 60 100 Q 200 200 340 100" stroke="#ffffff" strokeWidth="8" fill="none" opacity="0.1" />
-            <path d="M 80 320 Q 200 200 320 320" stroke="#ffffff" strokeWidth="12" fill="none" opacity="0.08" />
-          </g>
-        )}
-
-        {/* ================= RENDERING INTERACTIVE MARKERS ================= */}
-        <g id="interactive-marker-anchors">
-          {markers.map((marker) => {
-            const screenX = (marker.x / 100) * 400;
-            const screenY = (marker.y / 100) * 400;
-            const isActive = marker.id === activeMarkerId;
-            
-            // Set marker color scheme
-            const ringColor = 
-              marker.severity === "danger" 
-                ? "stroke-red-500 fill-red-500" 
-                : marker.severity === "warning"
-                ? "stroke-amber-500 fill-amber-500"
-                : "stroke-sky-400 fill-sky-400";
-
-            return (
-              <g
-                key={marker.id}
-                className="cursor-pointer group"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectMarker(isActive ? null : marker.id);
-                }}
-              >
-                {/* Flashing/pulsing outer beacon effect */}
-                <circle
-                  cx={screenX}
-                  cy={screenY}
-                  r={isActive ? "16" : "11"}
-                  className={`fill-none pointer-events-none transition-all duration-300 stroke-2 opacity-60 animate-ping`}
-                  style={{
-                    animationDuration: isActive ? "1.5s" : "2.5s",
-                    stroke: marker.severity === "danger" 
-                      ? "#ef4444" 
-                      : marker.severity === "warning"
-                      ? "#f59e0b"
-                      : "#38bdf8"
-                  }}
-                />
-                
-                {/* Thick hover outline */}
-                <circle
-                  cx={screenX}
-                  cy={screenY}
-                  r="14"
-                  fill="transparent"
-                  className="stroke-transparent group-hover:stroke-white/30 stroke-2 transition-colors duration-150"
-                />
-
-                {/* Main Marker core circle */}
-                <circle
-                  cx={screenX}
-                  cy={screenY}
-                  r="7.5"
-                  className={`${ringColor} ${
-                    isActive ? "scale-125" : "hover:scale-110"
-                  } transition-transform duration-200 stroke-white stroke-1 shadow-md`}
-                />
-
-                {/* Central white core */}
-                <circle
-                  cx={screenX}
-                  cy={screenY}
-                  r="2.5"
-                  fill="#ffffff"
-                />
-              </g>
-            );
-          })}
-        </g>
-      </svg>
-    );
+  // Color helper for abnormalities
+  const getSeverityColors = (severity: "info" | "warning" | "danger" | undefined, lesionType?: string) => {
+    if (lesionType === "microaneurysm" || lesionType === "hemorrhage") {
+      return { stroke: "#ef4444", fill: "rgba(239, 68, 68, 0.2)", bg: "bg-red-500", text: "text-red-400", border: "border-red-500" };
+    }
+    if (lesionType === "hard_exudate" || lesionType === "drusen") {
+      return { stroke: "#eab308", fill: "rgba(234, 179, 8, 0.2)", bg: "bg-amber-500", text: "text-amber-400", border: "border-amber-500" };
+    }
+    if (lesionType === "optic_cupping" || lesionType === "rim_thinning") {
+      return { stroke: "#06b6d4", fill: "rgba(6, 182, 212, 0.25)", bg: "bg-cyan-500", text: "text-cyan-400", border: "border-cyan-500" };
+    }
+    if (lesionType === "av_nicking" || lesionType === "copper_wiring") {
+      return { stroke: "#f97316", fill: "rgba(249, 115, 22, 0.2)", bg: "bg-orange-500", text: "text-orange-400", border: "border-orange-500" };
+    }
+    if (severity === "danger") {
+      return { stroke: "#ef4444", fill: "rgba(239, 68, 68, 0.2)", bg: "bg-red-500", text: "text-red-400", border: "border-red-500" };
+    }
+    if (severity === "warning") {
+      return { stroke: "#f59e0b", fill: "rgba(245, 158, 11, 0.2)", bg: "bg-amber-500", text: "text-amber-400", border: "border-amber-500" };
+    }
+    return { stroke: "#10b981", fill: "rgba(16, 185, 129, 0.2)", bg: "bg-emerald-500", text: "text-emerald-400", border: "border-emerald-500" };
   };
 
   return (
-    <div className="relative w-full aspect-square max-w-[420px] mx-auto select-none">
-      {uploadedImageSrc ? (
-        // Mode 2: User uploaded their own image cleanly
-        <div className="w-full h-full rounded-full overflow-hidden shadow-2xl border-4 border-slate-700 bg-slate-900 flex items-center justify-center relative">
+    <div className={`relative w-full aspect-square max-w-[440px] mx-auto select-none ${customOverlayClass}`}>
+      {/* Visual Canvas Container */}
+      <div className="relative w-full h-full rounded-full overflow-hidden shadow-2xl border-4 border-slate-800 bg-slate-950 flex items-center justify-center">
+        
+        {/* Layer 1: Base Retinal Image (Uploaded Photo or SVG Model) */}
+        {uploadedImageSrc ? (
           <img
             src={uploadedImageSrc}
-            alt="User uploaded retinal fundus"
-            className="w-full h-full object-cover rounded-full"
-            referrerPolicy="no-referrer"
+            alt="Clinical Fundus Input"
+            className="w-full h-full object-cover rounded-full filter contrast-105"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent pointer-events-none rounded-full flex flex-col justify-end items-center p-6 text-center">
-            <span className="text-white text-xs font-mono tracking-widest bg-slate-950/80 px-2.5 py-1 rounded-full border border-slate-700 uppercase">
-              Captured scan analysis
+        ) : (
+          <svg
+            id={`svg-fundus-${effectiveConditionKey}`}
+            viewBox="0 0 400 400"
+            className="w-full h-full rounded-full overflow-hidden transition-all duration-500"
+          >
+            <defs>
+              <radialGradient id="normalGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#ff7c4d" />
+                <stop offset="40%" stopColor="#e04a24" />
+                <stop offset="85%" stopColor="#9e2203" />
+                <stop offset="100%" stopColor="#4f0d00" />
+              </radialGradient>
+
+              <radialGradient id="amdGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#ff8a5c" />
+                <stop offset="45%" stopColor="#e35630" />
+                <stop offset="80%" stopColor="#a82103" />
+                <stop offset="100%" stopColor="#541002" />
+              </radialGradient>
+
+              <radialGradient id="glauGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#ff8f59" />
+                <stop offset="40%" stopColor="#db481f" />
+                <stop offset="85%" stopColor="#961f03" />
+                <stop offset="100%" stopColor="#4c0e00" />
+              </radialGradient>
+
+              <filter id="drusenBlur" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" />
+              </filter>
+            </defs>
+
+            {/* Retinal Fundus Background Sphere */}
+            <circle
+              cx="200"
+              cy="200"
+              r="192"
+              fill={
+                effectiveConditionKey === "amd"
+                  ? "url(#amdGrad)"
+                  : effectiveConditionKey === "glaucoma"
+                  ? "url(#glauGrad)"
+                  : "url(#normalGrad)"
+              }
+            />
+
+            {/* Optical Grid Reference Rings */}
+            {showGrid && (
+              <g id="optical-grid-rings" opacity="0.18" stroke="#ffffff" strokeDasharray="3,3">
+                <circle cx="200" cy="200" r="60" fill="none" strokeWidth="0.8" />
+                <circle cx="200" cy="200" r="120" fill="none" strokeWidth="0.8" />
+                <circle cx="200" cy="200" r="180" fill="none" strokeWidth="0.8" />
+                <line x1="200" y1="10" x2="200" y2="390" strokeWidth="0.6" />
+                <line x1="10" y1="200" x2="390" y2="200" strokeWidth="0.6" />
+              </g>
+            )}
+
+            {/* ================= OPTIC DISC & CUP (cx=140, cy=200) ================= */}
+            <g id="optic-nerve-complex">
+              {/* Disc Outer Border */}
+              <ellipse
+                cx="140"
+                cy="200"
+                rx={effectiveConditionKey === "glaucoma" ? "34" : "28"}
+                ry={effectiveConditionKey === "glaucoma" ? "38" : "32"}
+                fill="#ffd394"
+                opacity="0.92"
+                className="transition-all duration-300"
+              />
+
+              {/* Excavated Cup */}
+              <ellipse
+                cx="144"
+                cy="200"
+                rx={effectiveConditionKey === "glaucoma" ? "27" : "10"}
+                ry={effectiveConditionKey === "glaucoma" ? "31" : "12"}
+                fill="#fffae6"
+                opacity="0.96"
+                className="transition-all duration-300"
+              />
+            </g>
+
+            {/* ================= MACULA COMPLEX (cx=260, cy=200) ================= */}
+            <g id="macular-segment">
+              <circle cx="260" cy="200" r="34" fill="#6b1d03" opacity="0.4" />
+              <circle
+                cx="260"
+                cy="200"
+                r={effectiveConditionKey === "amd" ? "4" : "1.5"}
+                fill={effectiveConditionKey === "amd" ? "#d9b652" : "#ffeedd"}
+                opacity={effectiveConditionKey === "amd" ? "0.8" : "0.95"}
+              />
+            </g>
+
+            {/* ================= RETINAL VASCULATURE TREE ================= */}
+            <g id="retinal-vasculature" strokeLinecap="round">
+              {/* Superior Temporal Arcade */}
+              <path
+                d="M 148 180 Q 155 120 210 90 T 310 110"
+                stroke="#990000"
+                strokeWidth={effectiveConditionKey === "glaucoma" ? "1.8" : "2.6"}
+                fill="none"
+                opacity="0.95"
+              />
+              <path
+                d="M 148 180 Q 155 120 210 90 T 310 110"
+                stroke="#e03716"
+                strokeWidth={effectiveConditionKey === "glaucoma" ? "1.0" : "1.5"}
+                fill="none"
+                opacity="0.9"
+              />
+
+              {/* Inferior Temporal Arcade */}
+              <path
+                d="M 148 220 Q 160 275 220 305 T 315 285"
+                stroke="#990000"
+                strokeWidth={effectiveConditionKey === "glaucoma" ? "2.0" : "2.8"}
+                fill="none"
+                opacity="0.95"
+              />
+              <path
+                d="M 148 220 Q 160 275 220 305 T 315 285"
+                stroke="#f5401b"
+                strokeWidth={effectiveConditionKey === "glaucoma" ? "1.1" : "1.6"}
+                fill="none"
+                opacity="0.9"
+              />
+
+              {/* Nasal Arcades */}
+              <path d="M 132 185 Q 100 150 60 140" stroke="#880e00" strokeWidth="2.2" fill="none" />
+              <path d="M 132 185 Q 100 150 60 140" stroke="#f03816" strokeWidth="1.2" fill="none" />
+              <path d="M 132 215 Q 98 250 55 265" stroke="#880e00" strokeWidth="2.4" fill="none" />
+              <path d="M 132 215 Q 98 250 55 265" stroke="#f03816" strokeWidth="1.3" fill="none" />
+
+              {/* Macular Twigs */}
+              <path d="M 210 90 Q 235 125 242 160" stroke="#bf2304" strokeWidth="1.2" fill="none" opacity="0.8" />
+              <path d="M 220 305 Q 240 265 245 230" stroke="#bf2304" strokeWidth="1.1" fill="none" opacity="0.8" />
+            </g>
+
+            {/* ================= PATHOLOGY-SPECIFIC RENDERINGS ================= */}
+            {effectiveConditionKey === "diabetic" && (
+              <g id="dr-pathology">
+                {/* Microaneurysms */}
+                <circle cx="168" cy="140" r="2.5" fill="#ff0000" />
+                <circle cx="216" cy="140" r="2.8" fill="#ff0000" />
+                <circle cx="230" cy="245" r="2.2" fill="#ff0033" />
+                <circle cx="170" cy="230" r="3.0" fill="#ee0000" />
+                <circle cx="270" cy="155" r="2.6" fill="#ff0000" />
+                {/* Cotton wool spots */}
+                <circle cx="284" cy="116" r="9" fill="#ffffff" opacity="0.75" filter="url(#drusenBlur)" />
+                {/* Hard Exudates */}
+                <polygon points="216,232 220,230 223,235 218,236" fill="#ffee55" opacity="0.9" />
+                <polygon points="222,238 227,235 229,240 225,241" fill="#ffff33" opacity="0.95" />
+                <circle cx="212" cy="232" r="2.4" fill="#ffee44" />
+                <circle cx="218" cy="242" r="2.0" fill="#ffee66" />
+                <circle cx="228" cy="244" r="2.2" fill="#ffff55" />
+                {/* Blot Hemorrhages */}
+                <ellipse cx="272" cy="260" rx="6" ry="4" fill="#990000" opacity="0.85" />
+                <ellipse cx="132" cy="118" rx="5" ry="3.5" fill="#880000" opacity="0.85" />
+              </g>
+            )}
+
+            {effectiveConditionKey === "hypertension" && (
+              <g id="htn-pathology">
+                {/* Flame Hemorrhages */}
+                <path d="M 230 150 C 242 148, 258 146, 264 144 C 258 147, 242 152, 230 150 Z" stroke="#b91c1c" strokeWidth="3.5" fill="#dc2626" opacity="0.9" />
+                <path d="M 232 248 C 244 256, 256 266, 266 272 C 256 266, 244 256, 232 248 Z" stroke="#b91c1c" strokeWidth="4" fill="#ef4444" opacity="0.85" />
+                {/* AV Nicking crossing notches */}
+                <circle cx="192" cy="128" r="5" fill="none" stroke="#eab308" strokeWidth="1.5" strokeDasharray="2,2" />
+                <circle cx="208" cy="284" r="5" fill="none" stroke="#eab308" strokeWidth="1.5" strokeDasharray="2,2" />
+                {/* Copper Wiring Stripe */}
+                <path d="M 148 185 Q 185 135 250 130" stroke="#f59e0b" strokeWidth="2.2" fill="none" opacity="0.85" />
+                <path d="M 148 215 Q 185 275 250 280" stroke="#f59e0b" strokeWidth="2.2" fill="none" opacity="0.85" />
+              </g>
+            )}
+
+            {effectiveConditionKey === "amd" && (
+              <g id="amd-pathology">
+                <circle cx="260" cy="200" r="14" fill="#ffe066" opacity="0.6" filter="url(#drusenBlur)" />
+                <circle cx="272" cy="192" r="10" fill="#ffff80" opacity="0.5" filter="url(#drusenBlur)" />
+                <circle cx="248" cy="208" r="12" fill="#ffe680" opacity="0.55" filter="url(#drusenBlur)" />
+                <circle cx="230" cy="170" r="4.5" fill="#ffea75" opacity="0.8" filter="url(#drusenBlur)" />
+                <circle cx="282" cy="175" r="4.5" fill="#ffff80" opacity="0.8" filter="url(#drusenBlur)" />
+              </g>
+            )}
+          </svg>
+        )}
+
+        {/* Layer 2: Grad-CAM Activation Heatmap Overlay */}
+        {showGradCam && (
+          <div
+            className="absolute inset-0 rounded-full pointer-events-none transition-opacity duration-300 mix-blend-screen opacity-65"
+            style={{
+              background:
+                effectiveConditionKey === "glaucoma"
+                  ? "radial-gradient(circle at 35% 50%, rgba(239, 68, 68, 0.7) 0%, rgba(245, 158, 11, 0.5) 16%, rgba(59, 130, 246, 0.25) 30%, transparent 48%)"
+                  : effectiveConditionKey === "diabetic"
+                  ? "radial-gradient(circle at 55% 58%, rgba(239, 68, 68, 0.75) 0%, rgba(245, 158, 11, 0.5) 18%, rgba(59, 130, 246, 0.25) 32%, transparent 50%), radial-gradient(circle at 68% 65%, rgba(239, 68, 68, 0.6) 0%, transparent 22%)"
+                  : effectiveConditionKey === "hypertension"
+                  ? "radial-gradient(circle at 48% 32%, rgba(239, 68, 68, 0.7) 0%, rgba(245, 158, 11, 0.5) 15%, transparent 35%), radial-gradient(circle at 58% 62%, rgba(239, 68, 68, 0.65) 0%, transparent 30%)"
+                  : "radial-gradient(circle at 35% 50%, rgba(16, 185, 129, 0.5) 0%, transparent 30%), radial-gradient(circle at 65% 50%, rgba(16, 185, 129, 0.4) 0%, transparent 30%)"
+            }}
+          />
+        )}
+
+        {/* Layer 3: Optic Disc & Cup Contours (Cup-to-Disc Ratio Caliper) */}
+        {showOpticCup && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 400">
+            {/* Optic Disc Outer Contour (Green line) */}
+            <ellipse
+              cx="140"
+              cy="200"
+              rx={effectiveConditionKey === "glaucoma" ? "34" : "28"}
+              ry={effectiveConditionKey === "glaucoma" ? "38" : "32"}
+              fill="none"
+              stroke="#22c55e"
+              strokeWidth="1.8"
+              strokeDasharray="4,2"
+              className="animate-pulse"
+            />
+            {/* Optic Cup Inner Contour (Cyan line) */}
+            <ellipse
+              cx="144"
+              cy="200"
+              rx={effectiveConditionKey === "glaucoma" ? "27" : "10"}
+              ry={effectiveConditionKey === "glaucoma" ? "31" : "12"}
+              fill="none"
+              stroke="#06b6d4"
+              strokeWidth="2"
+            />
+            {/* Vertical Measurement Caliper */}
+            <line
+              x1="144"
+              y1={effectiveConditionKey === "glaucoma" ? 200 - 31 : 200 - 12}
+              x2="144"
+              y2={effectiveConditionKey === "glaucoma" ? 200 + 31 : 200 + 12}
+              stroke="#ffffff"
+              strokeWidth="1.5"
+            />
+            {/* Horizontal Ticks */}
+            <line x1="140" y1={effectiveConditionKey === "glaucoma" ? 200 - 31 : 200 - 12} x2="148" y2={effectiveConditionKey === "glaucoma" ? 200 - 31 : 200 - 12} stroke="#ffffff" strokeWidth="1.5" />
+            <line x1="140" y1={effectiveConditionKey === "glaucoma" ? 200 + 31 : 200 + 12} x2="148" y2={effectiveConditionKey === "glaucoma" ? 200 + 31 : 200 + 12} stroke="#ffffff" strokeWidth="1.5" />
+          </svg>
+        )}
+
+        {/* Layer 4: Interactive Localized Abnormality Bounding Boxes & Clinical Markers */}
+        <div className="absolute inset-0 w-full h-full pointer-events-auto">
+          {/* A. Rich Localized Abnormalities with Bounding Boxes */}
+          {showBoxes && effectiveAbnormalities.map((ab) => {
+            const isActive = activeMarkerId === ab.id;
+            const colors = getSeverityColors(ab.severity, ab.lesionType);
+            const boxLeft = Math.max(2, Math.min(92, ab.x - (ab.width || 12) / 2));
+            const boxTop = Math.max(2, Math.min(92, ab.y - (ab.height || 12) / 2));
+            const boxWidth = ab.width || 12;
+            const boxHeight = ab.height || 12;
+
+            return (
+              <div
+                key={ab.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSelect(isActive ? null : ab.id);
+                }}
+                onMouseEnter={() => {
+                  setHoveredItem({
+                    id: ab.id,
+                    title: ab.label,
+                    description: ab.description,
+                    confidence: ab.confidence,
+                    severity: ab.severity,
+                    clinicalSignificance: ab.clinicalSignificance,
+                    x: ab.x,
+                    y: ab.y
+                  });
+                }}
+                onMouseLeave={() => setHoveredItem(null)}
+                className={`absolute cursor-pointer transition-all duration-200 group rounded-sm border-2 ${
+                  isActive
+                    ? `border-white ring-4 ring-offset-1 ring-offset-slate-900 ring-${colors.bg.replace('bg-', '')} scale-105 z-40`
+                    : `${colors.border} hover:border-white z-20`
+                }`}
+                style={{
+                  left: `${boxLeft}%`,
+                  top: `${boxTop}%`,
+                  width: `${boxWidth}%`,
+                  height: `${boxHeight}%`,
+                  backgroundColor: colors.fill
+                }}
+              >
+                {/* Clinical Label Tag */}
+                <div
+                  className={`absolute -top-6 left-0 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold tracking-tight whitespace-nowrap shadow-md pointer-events-none z-30 transition-all ${
+                    isActive ? "bg-white text-slate-950 scale-110" : `${colors.bg} text-white group-hover:scale-105`
+                  }`}
+                >
+                  {ab.label}
+                  {ab.confidence && <span className="ml-1 opacity-80">({ab.confidence.toFixed(1)}%)</span>}
+                </div>
+
+                {/* Corner bracket optical styling */}
+                <div className="absolute top-0 left-0 w-1.5 h-1.5 border-t-2 border-l-2 border-white" />
+                <div className="absolute top-0 right-0 w-1.5 h-1.5 border-t-2 border-r-2 border-white" />
+                <div className="absolute bottom-0 left-0 w-1.5 h-1.5 border-b-2 border-l-2 border-white" />
+                <div className="absolute bottom-0 right-0 w-1.5 h-1.5 border-b-2 border-r-2 border-white" />
+
+                {/* Center target crosshair */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-60 group-hover:opacity-100">
+                  <div className="w-1.5 h-1.5 rounded-full bg-white shadow-sm" />
+                </div>
+              </div>
+            );
+          })}
+
+          {/* B. Legacy / Direct Markers (Pulse targets) if no abnormalities or in complement */}
+          {showBoxes && effectiveAbnormalities.length === 0 && effectiveMarkers.map((marker) => {
+            const isActive = activeMarkerId === marker.id;
+            const colors = getSeverityColors(marker.severity, marker.lesionType);
+            const boxW = marker.boxWidth || 14;
+            const boxH = marker.boxHeight || 14;
+            const boxLeft = Math.max(2, Math.min(92, marker.x - boxW / 2));
+            const boxTop = Math.max(2, Math.min(92, marker.y - boxH / 2));
+
+            return (
+              <div
+                key={marker.id}
+                style={{
+                  left: `${boxLeft}%`,
+                  top: `${boxTop}%`,
+                  width: `${boxW}%`,
+                  height: `${boxH}%`,
+                  backgroundColor: colors.fill
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSelect(isActive ? null : marker.id);
+                }}
+                onMouseEnter={() => {
+                  setHoveredItem({
+                    id: marker.id,
+                    title: marker.label,
+                    description: marker.description,
+                    severity: marker.severity,
+                    x: marker.x,
+                    y: marker.y
+                  });
+                }}
+                onMouseLeave={() => setHoveredItem(null)}
+                className={`absolute cursor-pointer rounded-sm border-2 transition-all ${
+                  isActive ? "border-white ring-4 ring-cyan-500 scale-105 z-30" : `${colors.border} hover:border-white z-20`
+                }`}
+              >
+                <div className={`absolute -top-5 left-0 px-1.5 py-0.2 rounded text-[9px] font-mono font-bold whitespace-nowrap shadow ${colors.bg} text-white`}>
+                  {marker.label}
+                </div>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className={`w-2.5 h-2.5 rounded-full ${colors.bg} ring-2 ring-white animate-ping`} />
+                  <span className={`w-2 h-2 rounded-full ${colors.bg} ring-1 ring-white absolute`} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Optical Alignment Reticle HUD */}
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-slate-900/80 backdrop-blur-sm border border-slate-700/70 px-2 py-0.5 rounded-md text-[10px] font-mono text-cyan-400 pointer-events-none">
+          <Scan className="w-3 h-3 text-cyan-400" />
+          <span>ROI: 512×512 TENSOR</span>
+        </div>
+
+        {showOpticCup && opticMetrics && (
+          <div className="absolute bottom-3 left-3 bg-slate-900/85 backdrop-blur-sm border border-cyan-500/40 px-2.5 py-1 rounded-md text-[10px] font-mono text-white pointer-events-none shadow-lg">
+            <span className="text-cyan-400 font-bold">CDR: </span>
+            <span className={opticMetrics.cupToDiscRatio > 0.6 ? "text-red-400 font-bold" : "text-emerald-400 font-bold"}>
+              {opticMetrics.cupToDiscRatio.toFixed(2)}
+            </span>
+            <span className="text-slate-400 ml-1">
+              ({opticMetrics.isntRuleCompliant ? "ISNT Normal" : "ISNT Violated"})
             </span>
           </div>
+        )}
 
-          {/* Absolute svg overlay for round red circles identifying affected areas */}
-          {customMarkers && customMarkers.length > 0 && (
-            <svg
-              className="absolute inset-0 w-full h-full rounded-full overflow-hidden animate-fade-in"
-              viewBox="0 0 400 400"
-            >
-              <g id="custom-vision-circles">
-                {customMarkers.map((marker) => {
-                  const screenX = (marker.x / 100) * 400;
-                  const screenY = (marker.y / 100) * 400;
-                  const isActive = marker.id === activeMarkerId;
-
-                  return (
-                    <g
-                      key={marker.id}
-                      className="cursor-pointer group"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectMarker(isActive ? null : marker.id);
-                      }}
-                    >
-                      {/* Flashing/pulsing red outer circle marker */}
-                      <circle
-                        cx={screenX}
-                        cy={screenY}
-                        r={isActive ? "18" : "12"}
-                        className="fill-none pointer-events-none transition-all duration-300 stroke-2 opacity-80 animate-ping"
-                        style={{
-                          animationDuration: isActive ? "1.2s" : "2.2s",
-                          stroke: "#ef4444"
-                        }}
-                      />
-
-                      {/* Hover Target ring */}
-                      <circle
-                        cx={screenX}
-                        cy={screenY}
-                        r="16"
-                        fill="transparent"
-                        className="stroke-transparent group-hover:stroke-red-500/40 stroke-2 transition-colors duration-150"
-                      />
-
-                      {/* Main solid red diagnostic dot */}
-                      <circle
-                        cx={screenX}
-                        cy={screenY}
-                        r="8"
-                        fill="#ef4444"
-                        className={`transition-transform duration-200 stroke-white stroke-1 shadow-lg ${
-                          isActive ? "scale-125" : "hover:scale-115"
-                        }`}
-                      />
-
-                      <circle
-                        cx={screenX}
-                        cy={screenY}
-                        r="2.5"
-                        fill="#ffffff"
-                      />
-                    </g>
-                  );
-                })}
-              </g>
-            </svg>
-          )}
-        </div>
-      ) : (
-        // Mode 1: Vector-Based Interactive Fundus Graphic
-        <div className="relative w-full h-full">
-          {renderFundusSVG()}
-
-          {/* Prompt banner to click icons */}
-          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 px-3 py-1 rounded-full text-[11px] font-medium tracking-wide text-gray-300 shadow-xl pointer-events-none whitespace-nowrap animate-bounce">
-            💡 Click on pulse indicators to view features
+        {showVessels && vascularMetrics && (
+          <div className="absolute bottom-3 right-3 bg-slate-900/85 backdrop-blur-sm border border-orange-500/40 px-2.5 py-1 rounded-md text-[10px] font-mono text-white pointer-events-none shadow-lg">
+            <span className="text-orange-400 font-bold">A/V Ratio: </span>
+            <span className={vascularMetrics.arterioleToVenuleRatio < 0.5 ? "text-red-400 font-bold" : "text-emerald-400 font-bold"}>
+              {vascularMetrics.arterioleToVenuleRatio.toFixed(2)}
+            </span>
           </div>
+        )}
+      </div>
+
+      {/* Floating Clinical Tooltip on Hover */}
+      {hoveredItem && (
+        <div
+          className="absolute z-50 pointer-events-none w-64 bg-slate-900/95 backdrop-blur-md border border-cyan-500/50 rounded-lg p-3 shadow-2xl text-left transition-all duration-150 animate-fade-in"
+          style={{
+            left: `${Math.min(65, Math.max(10, hoveredItem.x))}%`,
+            top: hoveredItem.y > 60 ? `${hoveredItem.y - 30}%` : `${hoveredItem.y + 12}%`
+          }}
+        >
+          <div className="flex items-start justify-between gap-1 mb-1">
+            <span className="text-xs font-bold text-white leading-tight">{hoveredItem.title}</span>
+            {hoveredItem.confidence && (
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+                {hoveredItem.confidence.toFixed(1)}%
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-300 leading-relaxed mb-1.5">
+            {hoveredItem.description}
+          </p>
+          {hoveredItem.clinicalSignificance && (
+            <div className="text-[10px] text-amber-300/90 border-t border-slate-800 pt-1 flex items-start gap-1">
+              <Info className="w-3 h-3 shrink-0 mt-0.5 text-amber-400" />
+              <span>{hoveredItem.clinicalSignificance}</span>
+            </div>
+          )}
         </div>
       )}
     </div>

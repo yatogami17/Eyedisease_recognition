@@ -1,6 +1,6 @@
 {
   "name": "AI Retinal Eye Disease Predictor",
-  "description": "An advanced clinical application that analyzes retinal fundus images and camera-captured scans to identify eye conditions such as diabetic retinopathy, glaucoma, macular degeneration, and cataracts.",
+  "description": "AI-driven disease prediction system using retinal fundus images and Convolutional Neural Networks (CNN) for early detection of Diabetic Retinopathy, Hypertension, Glaucoma, and Normal conditions, based on the IJIRCCE published research.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
